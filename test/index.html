@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>RPM.js</title>
+<link rel="stylesheet" href="index.css">
+</head>
+<body>
+    <h1>Start Your Engines!</h1>
+    <form>
+        <label for="maxstreams">Maximum number of streams per worker</label><br>
+        <input type="text" id="maxstreams" value="10"><br>
+    </form>
+    <button id="SubmitButton" type="button">Submit Changes (clicking this will reset)</button><br>
+    <button id="StartUpButton" type="button">Lightning Quick Up</button>
+    <button id="StartDownButton" type="button">Lightning Quick Down</button><br>
+    <button id="LogButton" type="button">Lightning Quick Logging</button><br>
+    <table>
+        <thead>
+            <tr>
+                <th>Connection</th>
+                <th>MovingAverage (MB/s)</th>
+            </tr>
+        </thead>
+        <tbody id="StatsTable">
+        </tbody>
+    </table>
+    <table>
+        <thead>
+            <tr>
+                <th>Worker</th>
+                <th>Direction</th>
+                <th>Total (MB)</th>
+                <th>Delta (MB/s)</th>
+            </tr>
+        </thead>
+        <tbody id="StreamTable">
+        </tbody>
+    </table>
+    <ul id="StreamList">
+
+    </ul>
+</body>
+<script src="worker.js"></script>
+<script>
+const STREAMLIST = document.getElementById("StreamList")
+const STREAMTABLE = document.getElementById("StreamTable")
+const STATSTABLE = document.getElementById("StatsTable")
+
+var MAXSTREAMS = 0
+ID = -1
+workers = {}
+
+var DATA = {}
+
+function initSettings() {
+    // Terminate all existing workers
+    for (var key of Object.keys(workers)) {
+        workers[key].worker.postMessage({
+            cancel: true,
+        })
+        //workers[key].worker.terminate()
+    }
+    // Reset workers
+    workers = {}
+
+    // Reset ID
+    ID = -1
+    
+    // Clear STREAMLIST
+    while (STREAMLIST.firstChild) {
+        STREAMLIST.removeChild(STREAMLIST.firstChild);
+    }
+
+    // Clear STREAMTABLE
+    while (STREAMTABLE.firstChild) {
+        STREAMTABLE.removeChild(STREAMTABLE.firstChild);
+    }
+
+    // Set MAXSTREAMS
+    MAXSTREAMS = parseInt(document.getElementById("maxstreams").value);
+}
+
+initSettings();
+
+document.getElementById("SubmitButton").onclick=initSettings;
+
+document.getElementById("StartUpButton").onclick=() => {
+    ID++;
+    startStream(ID, "up");
+}
+
+document.getElementById("StartDownButton").onclick=() => {
+    ID++;
+    startStream(ID, "down");
+}
+
+document.getElementById("LogButton").onclick=() => {
+    console.log(DATA)
+}
+
+async function startStream(id, direction) {
+     // Create new element in table
+     let statrow = {
+        base: document.createElement("tr"),
+        connection: document.createElement("td"),
+        ma: document.createElement("td"),
+    }
+    STATSTABLE.append(statrow.base)
+    statrow.base.append(statrow.connection, statrow.ma);
+    statrow.connection.innerHTML = id;
+    statrow.ma.innerHTML = "0";
+
+    DATA[id] = {
+        workerID: id % MAXSTREAMS,
+        direction: direction,
+        points: [],
+        MovingAverage: 0,
+        row: statrow,
+    }
+    let ix = Math.floor(id/MAXSTREAMS)
+    // If our id is at start of the max streams then generate a new worker
+    if (id % MAXSTREAMS == 0) {
+        workers[ix] = {
+            worker: new Worker("worker.js"),
+            elements: [],
+        };
+        workers[ix].worker.addEventListener("message", function(e) {
+            if (e.data.hasOwnProperty("console")) {
+                console.log(e.data.console)
+                return
+            }
+            let delta = (e.data.transfered / 1024 / 1024) / (e.data.time / 1000)
+            DATA[ix + e.data.id].points.push({
+                transfered: (e.data.transfered / 1024 / 1024),
+                duration: (e.data.time / 1000),
+            });
+            DATA[ix + e.data.id].MovingAverage =  (DATA[ix + e.data.id].MovingAverage * DATA[ix + e.data.id].points.length/(DATA[ix + e.data.id].points.length + 1)) + (delta / (DATA[ix + e.data.id].points.length + 1))
+            DATA[ix + e.data.id].row.ma.innerHTML = `${parseFloat(DATA[ix + e.data.id].MovingAverage).toFixed(3)}`;
+            workers[ix].elements[e.data.id].total += e.data.transfered
+            workers[ix].elements[e.data.id].element.innerHTML = `worker ${ix} | direction ${e.data.direction} | total ${parseFloat(workers[ix].elements[e.data.id].total / 1024 / 1024).toFixed(3)} MB | delta: ${parseFloat((e.data.transfered / 1024 / 1024)/(e.data.time / 1000)).toFixed(3)} MB/s` // Delta is MB/second
+            workers[ix].elements[e.data.id].row.worker.innerHTML = `${ix}`
+            workers[ix].elements[e.data.id].row.direction.innerHTML = `${e.data.direction}`
+            workers[ix].elements[e.data.id].row.total.innerHTML = `${parseFloat(workers[ix].elements[e.data.id].total / 1024 / 1024).toFixed(3)}`
+            workers[ix].elements[e.data.id].row.delta.innerHTML = `${parseFloat((e.data.transfered / 1024 / 1024)/(e.data.time / 1000)).toFixed(3)}`
+        });
+    }
+    
+    // Create new element in elements list
+    let element = document.createElement("li");
+    element.innerHTML = "0";
+    workers[ix].elements.push({
+        total: 0,
+        element: element
+    });
+    STREAMLIST.append(element)
+
+    // Create new element in table
+    let row = {
+        base: document.createElement("tr"),
+        worker: document.createElement("td"),
+        direction: document.createElement("td"),
+        total: document.createElement("td"),
+        delta: document.createElement("td"),
+    }
+    STREAMTABLE.append(row.base)
+    row.base.append(row.worker, row.direction, row.total, row.delta);
+    row.worker.innerHTML = "0";
+    row.direction.innerHTML = "0";
+    row.total.innerHTML = "0";
+    row.delta.innerHTML = "0";
+    workers[ix].elements[id % MAXSTREAMS].row = row;
+
+    // Start worker
+    if (direction == "up") {
+        workers[ix].worker.postMessage({
+            cancel: false,
+            direction: "up",
+            id: id % MAXSTREAMS,
+            url: "https://rpm.obs.cr:4043/slurp"
+        });
+    } else if (direction == "down") {
+        workers[ix].worker.postMessage({
+            cancel: false,
+            direction: "down",
+            id: id % MAXSTREAMS,
+            url: "https://rpm.obs.cr:4043/large"
+        });
+    }
+}
+</script> 
+</html> 
